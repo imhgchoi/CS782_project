@@ -52,17 +52,8 @@ def load_model_and_tokenizer(model_path, tokenizer_path=None, device='cuda:0', *
         use_fast=False
     )
 
-    # if 'oasst-sft-6-llama-30b' in tokenizer_path:
-    #     tokenizer.bos_token_id = 1
-    #     tokenizer.unk_token_id = 0
-    # if 'guanaco' in tokenizer_path:
-    #     tokenizer.eos_token_id = 2
-    #     tokenizer.unk_token_id = 0
-    # if 'llama-2' in tokenizer_path:
     tokenizer.pad_token = tokenizer.unk_token
     tokenizer.padding_side = 'left'
-    # if 'falcon' in tokenizer_path:
-    #     tokenizer.padding_side = 'left'
     if not tokenizer.pad_token:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -112,8 +103,7 @@ def roulette_wheel_selection(data_list, score_list, num_selected, if_softmax=Tru
 
 
 def apply_crossover_and_mutation(selected_data, crossover_probability=0.5, num_points=3, mutation_rate=0.01,
-                                 API_key=None,
-                                 reference=None, if_api=True):
+                                 API_key=None, reference=None, if_api=True):
     offspring = []
 
     for i in range(0, len(selected_data), 2):
@@ -207,17 +197,20 @@ def gpt_mutate(sentence, API_key=None):
     return revised_sentence
 
 def apply_gpt_mutation(offspring, mutation_rate=0.01, API_key=None, reference=None, if_api=True):
-    if if_api:
-        for i in range(len(offspring)):
-            if random.random() < mutation_rate:
-                if API_key is None:
-                    offspring[i] = random.choice(reference[len(offspring):])
-                else:
-                    offspring[i] = gpt_mutate(offspring[i], API_key)
-    else:
-        for i in range(len(offspring)):
-            if random.random() < mutation_rate:
-                offspring[i] = replace_with_synonyms(offspring[i])
+    for i in range(len(offspring)):
+        if random.random() < mutation_rate:
+            offspring[i] = random.choice(reference[len(offspring):])
+    # if if_api:
+    #     for i in range(len(offspring)):
+    #         if random.random() < mutation_rate:
+    #             if API_key is None:
+    #                 offspring[i] = random.choice(reference[len(offspring):])
+    #             else:
+    #                 offspring[i] = gpt_mutate(offspring[i], API_key)
+    # else:
+    #     for i in range(len(offspring)):
+    #         if random.random() < mutation_rate:
+    #             offspring[i] = replace_with_synonyms(offspring[i])
     return offspring
 
 
@@ -418,57 +411,64 @@ def join_words_with_punctuation(words):
 
 def get_score_autodan(tokenizer, conv_template, instruction, target, model, device, test_controls=None, crit=None, dis=None):
     # Convert all test_controls to token ids and find the max length
-    input_ids_list = []
-    target_slices = []
-    for item in test_controls:
-        suffix_manager = autodan_SuffixManager(tokenizer=tokenizer,
-                                               conv_template=conv_template,
-                                               instruction=instruction,
-                                               target=target,
-                                               adv_string=item)
-        input_ids = suffix_manager.get_input_ids(adv_string=item).to(device)
-        input_ids_list.append(input_ids)
-        target_slices.append(suffix_manager._target_slice)
+    full_losses = None
+    for i, t in enumerate(target):
+        target_slices = []
+        input_ids_list = []
+        for item in test_controls:
+            suffix_manager = autodan_SuffixManager(tokenizer=tokenizer,
+                                                conv_template=conv_template,
+                                                instruction=instruction,
+                                                target=t,
+                                                adv_string=item)
+            input_ids = suffix_manager.get_input_ids(adv_string=item).to(device)
+            input_ids_list.append(input_ids)
+            target_slices.append(suffix_manager._target_slice)
 
-    # Pad all token ids to the max length
-    pad_tok = 0
-    for ids in input_ids_list:
-        while pad_tok in ids:
-            pad_tok += 1
+        # Pad all token ids to the max length
+        pad_tok = 0
+        for ids in input_ids_list:
+            while pad_tok in ids:
+                pad_tok += 1
 
-    # Find the maximum length of input_ids in the list
-    max_input_length = max([ids.size(0) for ids in input_ids_list])
+        # Find the maximum length of input_ids in the list
+        max_input_length = max([ids.size(0) for ids in input_ids_list])
 
-    # Pad each input_ids tensor to the maximum length
-    padded_input_ids_list = []
-    for ids in input_ids_list:
-        pad_length = max_input_length - ids.size(0)
-        padded_ids = torch.cat([ids, torch.full((pad_length,), pad_tok, device=device)], dim=0)
-        padded_input_ids_list.append(padded_ids)
+        # Pad each input_ids tensor to the maximum length
+        padded_input_ids_list = []
+        for ids in input_ids_list:
+            pad_length = max_input_length - ids.size(0)
+            padded_ids = torch.cat([ids, torch.full((pad_length,), pad_tok, device=device)], dim=0)
+            padded_input_ids_list.append(padded_ids)
 
-    # Stack the padded input_ids tensors
-    input_ids_tensor = torch.stack(padded_input_ids_list, dim=0)
+        # Stack the padded input_ids tensors
+        input_ids_tensor = torch.stack(padded_input_ids_list, dim=0)
 
-    attn_mask = (input_ids_tensor != pad_tok).type(input_ids_tensor.dtype)
+        attn_mask = (input_ids_tensor != pad_tok).type(input_ids_tensor.dtype)
 
-    # Forward pass and compute loss
-    logits = forward(model=model, input_ids=input_ids_tensor, attention_mask=attn_mask, batch_size=len(test_controls))
-    losses = []
-    for idx, target_slice in enumerate(target_slices):
-        loss_slice = slice(target_slice.start - 1, target_slice.stop - 1)
-        logits_slice = logits[idx, loss_slice, :].unsqueeze(0).transpose(1, 2)
-        targets = input_ids_tensor[idx, target_slice].unsqueeze(0)
-        if dis is not None:
-            logits_cal = logits_slice.unsqueeze(0).expand_as(dis)
-            loss = -crit(logits_cal, dis).mean()
-            losses.append(loss)
+        # Forward pass and compute loss
+        logits = forward(model=model, input_ids=input_ids_tensor, attention_mask=attn_mask, batch_size=len(test_controls))
+        losses = []
+        for idx, target_slice in enumerate(target_slices):
+            loss_slice = slice(target_slice.start - 1, target_slice.stop - 1)
+            logits_slice = logits[idx, loss_slice, :].unsqueeze(0).transpose(1, 2)
+            targets = input_ids_tensor[idx, target_slice].unsqueeze(0)
+            if dis is not None:
+                logits_cal = logits_slice.unsqueeze(0).expand_as(dis)
+                loss = -crit(logits_cal, dis).mean()
+                losses.append(loss)
+            else:
+                loss = crit(logits_slice, targets)
+                losses.append(loss)
+
+        del input_ids_list, target_slices, input_ids_tensor, attn_mask
+        gc.collect()
+        if i == 0:
+            full_losses = torch.stack(losses)
         else:
-            loss = crit(logits_slice, targets)
-            losses.append(loss)
-
-    del input_ids_list, target_slices, input_ids_tensor, attn_mask
-    gc.collect()
-    return torch.stack(losses)
+            # full_losses += torch.stack(losses)
+            full_losses = torch.min(full_losses, torch.stack(losses))
+    return full_losses
 
 
 def get_score_autodan_low_memory(tokenizer, conv_template, instruction, target, model, device, test_controls=None,
