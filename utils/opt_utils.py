@@ -411,7 +411,7 @@ def join_words_with_punctuation(words):
 
 def get_score_autodan(tokenizer, conv_template, instruction, target, model, device, test_controls=None, crit=None, dis=None):
     # Convert all test_controls to token ids and find the max length
-    full_losses = None
+    full_losses = []
     for i, t in enumerate(target):
         target_slices = []
         input_ids_list = []
@@ -463,12 +463,15 @@ def get_score_autodan(tokenizer, conv_template, instruction, target, model, devi
 
         del input_ids_list, target_slices, input_ids_tensor, attn_mask
         gc.collect()
-        if i == 0:
-            full_losses = torch.stack(losses)
-        else:
-            # full_losses += torch.stack(losses)
-            full_losses = torch.min(full_losses, torch.stack(losses))
-    return full_losses
+
+        full_losses.append(torch.stack(losses))
+        # if i == 0:
+        #     full_losses = torch.stack(losses)
+        # else:
+        #     # full_losses += torch.stack(losses)
+        #     full_losses = torch.min(full_losses, torch.stack(losses))
+    scores, min_idx = torch.stack(full_losses).min(0)
+    return scores, min_idx
 
 
 def get_score_autodan_low_memory(tokenizer, conv_template, instruction, target, model, device, test_controls=None,
