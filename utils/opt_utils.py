@@ -412,6 +412,7 @@ def join_words_with_punctuation(words):
 def get_score_autodan(tokenizer, conv_template, instruction, target, model, device, test_controls=None, crit=None, dis=None):
     # Convert all test_controls to token ids and find the max length
     full_losses = None
+    full_perplexes = None
     for i, t in enumerate(target):
         target_slices = []
         input_ids_list = []
@@ -449,7 +450,13 @@ def get_score_autodan(tokenizer, conv_template, instruction, target, model, devi
         # Forward pass and compute loss
         logits = forward(model=model, input_ids=input_ids_tensor, attention_mask=attn_mask, batch_size=len(test_controls))
         losses = []
+        #perplexities = []
         for idx, target_slice in enumerate(target_slices):
+            #prompt_logits = logits[idx, :target_slice.start-1, :].unsqueeze(0).transpose(1, 2)
+            #prompt_target = input_ids_tensor[idx, 1:target_slice.start].unsqueeze(0)
+            #log_perplexity = crit(prompt_logits, prompt_target)
+            #perplexity = torch.exp(log_perplexity)
+            #perplexities.append(perplexity)
             loss_slice = slice(target_slice.start - 1, target_slice.stop - 1)
             logits_slice = logits[idx, loss_slice, :].unsqueeze(0).transpose(1, 2)
             targets = input_ids_tensor[idx, target_slice].unsqueeze(0)
@@ -465,10 +472,13 @@ def get_score_autodan(tokenizer, conv_template, instruction, target, model, devi
         gc.collect()
         if i == 0:
             full_losses = torch.stack(losses)
+            #full_perplexes = torch.stack(perplexities)
         else:
-            # full_losses += torch.stack(losses)
-            full_losses = torch.min(full_losses, torch.stack(losses))
-    return full_losses
+            full_losses += torch.stack(losses)
+            #full_perplexes += torch.stack(perplexities)
+            #full_losses = torch.min(full_losses, torch.stack(losses))
+            #full_perplexes = torch.min(full_perplexes, torch.stack(perplexities))
+    return full_losses, full_perplexes
 
 
 def get_score_autodan_low_memory(tokenizer, conv_template, instruction, target, model, device, test_controls=None,
